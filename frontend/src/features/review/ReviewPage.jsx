@@ -109,31 +109,47 @@ function ReviewPage() {
   const renderMetadataChanges = () => {
     if (!diffData?.before_meta || !diffData?.current_meta) return null;
     const metaKeys = ['priority', 'disclosure'];
+    
+    const hasPathChanges = diffData.path_changes && diffData.path_changes.length > 0;
+    
     const diffs = metaKeys.filter(key => {
       const oldVal = diffData.before_meta[key];
       const newVal = diffData.current_meta[key];
-      return JSON.stringify(oldVal) !== JSON.stringify(newVal);
+      const isChanged = JSON.stringify(oldVal) !== JSON.stringify(newVal);
+      
+      if (isChanged) return true;
+      if (hasPathChanges && (oldVal != null || newVal != null)) return true;
+      
+      return false;
     });
 
     if (diffs.length === 0) return null;
 
+    const allPreserved = diffs.every(key => JSON.stringify(diffData.before_meta[key]) === JSON.stringify(diffData.current_meta[key]));
+    const isCreation = diffData.action === 'created';
+    const isDeletion = diffData.current_meta.priority == null && diffData.before_meta.priority != null;
+
     return (
       <div className="mb-8 p-4 bg-slate-900/40 border border-slate-800/60 rounded-lg backdrop-blur-sm">
         <h3 className="text-xs font-bold text-slate-500 uppercase mb-4 flex items-center gap-2 tracking-widest">
-          <Activity size={12} /> Metadata Shifts
+          <Activity size={12} /> Edge Metadata {isCreation ? "(Initial)" : isDeletion ? "(Removed)" : allPreserved ? "(Preserved)" : "Shifts"}
         </h3>
         <div className="space-y-3">
           {diffs.map(key => {
             const oldVal = diffData.before_meta[key];
             const newVal = diffData.current_meta[key];
+            const isChanged = JSON.stringify(oldVal) !== JSON.stringify(newVal);
+            
             return (
               <div key={key} className="grid grid-cols-[100px_1fr_20px_1fr] gap-4 text-sm items-start">
                 <span className="text-slate-400 font-medium capitalize text-xs pt-0.5">{key}</span>
-                <div className="text-rose-400/70 line-through text-xs font-mono text-right break-words">
+                <div className={clsx("text-xs font-mono text-right break-words", isChanged && !isCreation ? "text-rose-400/70 line-through" : "text-slate-500")}>
                   {oldVal != null ? String(oldVal) : '∅'}
                 </div>
-                <div className="text-center text-slate-700 pt-0.5">→</div>
-                <div className="text-emerald-400 text-xs font-mono font-bold break-words">
+                <div className="text-center text-slate-700 pt-0.5">
+                  {isChanged ? '→' : '≡'}
+                </div>
+                <div className={clsx("text-xs font-mono font-bold break-words", isChanged ? "text-emerald-400" : "text-slate-400")}>
                   {newVal != null ? String(newVal) : '∅'}
                 </div>
               </div>

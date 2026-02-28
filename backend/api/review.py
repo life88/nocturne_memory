@@ -133,13 +133,57 @@ def _get_causal_anchors(changed_rows: List[Dict[str, Any]], all_rows: List[Dict[
             # 场景 A：路径级联 (Path Cascades)
             # 比如创建/删除 core://A/B 时，检查快照里有没有创建/删除 core://A
             # 如果有，说明 B 的变化是被 A 顺带引发的。B 认 A 为父因。
+            # 但是！如果这个 path 对应的 edge 在这次快照里也是同步新建/删除的，
+            # 那么说明这是一个完全独立的节点创建/删除，而不只是父目录移动造成的从属路径级联。
+            # 此时不应该将它折叠到父路径中，而应该让它作为独立的组展示。
             ref = row["before"] if row["before"] else row["after"]
+            
+            edge_changed_in_sync = False
+            edge_id = ref.get("edge_id")
+            if edge_id is not None:
+                for r in changed_rows:
+                    if r["table"] == "edges":
+                        eref = r["before"] if r["before"] else r["after"]
+                        if eref and eref.get("id") == edge_id and same_action(row, r):
+                            edge_changed_in_sync = True
+                            break
+
             if "/" in ref["path"]:
                 parent_path = ref["path"].rsplit("/", 1)[0]
                 parent_uri = f"{ref['domain']}://{parent_path}"
                 parent_row = paths_by_string.get(parent_uri)
                 if parent_row and same_action(row, parent_row):
-                    parent_map[key] = _make_row_key("paths", parent_row["before"] if parent_row["before"] else parent_row["after"])
+                    pref = parent_row["before"] if parent_row["before"] else parent_row["after"]
+                    
+                    is_independent = False
+                    if edge_changed_in_sync:
+                        if is_deleted(row):
+                            # 对于删除：检查是否是父节点级联删除引发的
+                            parent_edge_deleted = False
+                            p_edge_id = pref.get("edge_id")
+                            if p_edge_id is not None:
+                                for r in changed_rows:
+                                    if r["table"] == "edges":
+                                        eref = r["before"] if r["before"] else r["after"]
+                                        if eref and eref.get("id") == p_edge_id and same_action(parent_row, r):
+                                            parent_edge_deleted = True
+                                            break
+                            else:
+                                # 如果父路径没有 edge_id（即它是根路径），且它正在被删除，
+                                # 则默认这是一个级联删除，不应视为独立删除。
+                                parent_edge_deleted = True
+                                
+                            # 如果父节点 edge 没被删，说明当前节点是独立删除，不应折叠
+                            if not parent_edge_deleted:
+                                is_independent = True
+                        elif is_created(row):
+                            # 对于创建：没有级联创建子树 edge 的逻辑。
+                            # 只要当前节点的 edge 是新建的，它就是独立创建的，不应折叠到父 path。
+                            # （子树移动时，子节点的 edge 不会新建，edge_changed_in_sync 为 False，依然会正常折叠）
+                            is_independent = True
+
+                    if not is_independent:
+                        parent_map[key] = _make_row_key("paths", pref)
                     
         elif row["table"] == "edges":
             # 场景 B：边的级联删除/创建 (Edge Cascades)
@@ -368,6 +412,9 @@ async def _extract_content_and_meta_for_node(rows: List[Dict[str, Any]], slot: s
 
     content = None
     client = get_db_client()
+    
+    node_created = any(r["table"] == "nodes" and r["before"] is None and (r.get("after") or {}).get("uuid") == node_uuid for r in rows)
+    node_deleted = any(r["table"] == "nodes" and r["after"] is None and (r.get("before") or {}).get("uuid") == node_uuid for r in rows)
 
     if memory_id is not None:
         # If we found a memory pointer in the changeset, fetch its content from DB
@@ -377,20 +424,48 @@ async def _extract_content_and_meta_for_node(rows: List[Dict[str, Any]], slot: s
     else:
         # 2. Fallback: If no memory pointer was in the changeset (e.g. only paths changed),
         # query the live DB for the currently active memory and edge of this node.
-        from sqlalchemy import select
-        from db.sqlite_client import Memory, Edge
-        async with client.session() as session:
-            if meta["priority"] is None:
+        memory_created = any(r["table"] == "memories" and r["before"] is None and (r.get("after") or {}).get("node_uuid") == node_uuid for r in rows)
+        memory_deleted = any(r["table"] == "memories" and r["after"] is None and (r.get("before") or {}).get("node_uuid") == node_uuid for r in rows)
+        should_fetch_memory = True
+        
+        # If the memory or node was created in this changeset, it has no 'before' state.
+        # Don't fetch the current live DB state and incorrectly present it as 'before'.
+        if slot == "before" and (node_created or memory_created):
+            should_fetch_memory = False
+            
+        if slot == "after" and (node_deleted or memory_deleted):
+            should_fetch_memory = False
+            
+        if should_fetch_memory:
+            from sqlalchemy import select
+            from db.sqlite_client import Memory
+            async with client.session() as session:
+                mem = (await session.execute(
+                    select(Memory).where(Memory.node_uuid == node_uuid, Memory.deprecated == False)
+                )).scalar_one_or_none()
+                if mem:
+                    content = mem.content
+
+    if meta["priority"] is None:
+        edge_created = any(r["table"] == "edges" and r["before"] is None and (r.get("after") or {}).get("child_uuid") == node_uuid for r in rows)
+        edge_deleted = any(r["table"] == "edges" and r["after"] is None and (r.get("before") or {}).get("child_uuid") == node_uuid for r in rows)
+        should_fetch_edge = True
+        
+        # If the edge or node was created in this changeset, it has no 'before' state.
+        if slot == "before" and (node_created or edge_created):
+            should_fetch_edge = False
+            
+        if slot == "after" and (node_deleted or edge_deleted):
+            should_fetch_edge = False
+            
+        if should_fetch_edge:
+            from sqlalchemy import select
+            from db.sqlite_client import Edge
+            async with client.session() as session:
                 edge = (await session.execute(select(Edge).where(Edge.child_uuid == node_uuid).limit(1))).scalar_one_or_none()
                 if edge:
                     meta["priority"] = edge.priority
                     meta["disclosure"] = edge.disclosure
-            
-            mem = (await session.execute(
-                select(Memory).where(Memory.node_uuid == node_uuid, Memory.deprecated == False)
-            )).scalar_one_or_none()
-            if mem:
-                content = mem.content
 
     return content, meta
 
@@ -488,6 +563,9 @@ async def get_group_diff(node_uuid: str):
     # If the "after" state wasn't fully captured in the snapshot (e.g. partial edits),
     # use the actual live DB state as the absolute ground truth for current data.
     if current_content is None and current_meta["priority"] is None:
+        node_deleted = any(r["table"] == "nodes" and r["after"] is None and (r.get("before") or {}).get("uuid") == node_uuid for r in rows)
+        edge_deleted = any(r["table"] == "edges" and r["after"] is None and (r.get("before") or {}).get("child_uuid") == node_uuid for r in rows)
+        
         async with client.session() as session:
             from db.sqlite_client import Memory
             mem = (await session.execute(
@@ -495,10 +573,12 @@ async def get_group_diff(node_uuid: str):
             )).scalar_one_or_none()
             if mem:
                 current_content = mem.content
-            edge = (await session.execute(select(Edge).where(Edge.child_uuid == node_uuid).limit(1))).scalar_one_or_none()
-            if edge:
-                current_meta["priority"] = edge.priority
-                current_meta["disclosure"] = edge.disclosure
+                
+            if not (node_deleted or edge_deleted):
+                edge = (await session.execute(select(Edge).where(Edge.child_uuid == node_uuid).limit(1))).scalar_one_or_none()
+                if edge:
+                    current_meta["priority"] = edge.priority
+                    current_meta["disclosure"] = edge.disclosure
 
     has_changes = (before_content != current_content) or (before_meta != current_meta)
 
