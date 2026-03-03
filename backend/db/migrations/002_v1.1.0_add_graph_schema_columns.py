@@ -4,7 +4,7 @@ from sqlalchemy import inspect as sa_inspect
 
 async def up(engine: AsyncEngine):
     """
-    Version: v1.1.0 (from v1.0.2)
+    Version: v1.1.0 (from v1.0.4)
     Add graph-schema columns (node_uuid on memories, edge_id on paths).
     New tables 'nodes' and 'edges' are created by create_all before this runs.
     """

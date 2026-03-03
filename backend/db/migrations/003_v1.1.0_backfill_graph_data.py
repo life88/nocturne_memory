@@ -7,7 +7,7 @@ from ..sqlite_client import Node, Memory, Edge, ROOT_NODE_UUID
 
 async def up(engine: AsyncEngine):
     """
-    Version: v1.1.0 (from v1.0.2)
+    Version: v1.1.0 (from v1.0.4)
     Backfill: populate nodes/edges from legacy flat data and link to graph schema.
     Migrates memory_id/priority/disclosure from paths into edges.
     Safe to call repeatedly — skips if already migrated or if no old data exists.
