@@ -1,0 +1,26 @@
+{
+  "skill_name": "nocturne-memory",
+  "evals": [
+    {
+      "id": 0,
+      "eval_name": "boot-memory-loaded-on-new-session",
+      "prompt": "Hello! My name is Alice and I work as a data scientist. Can you help me review this Python script?",
+      "expected_output": "read_memory(uri='system://boot') is called FIRST, before any other tool or output. Memory content is integrated as self-knowledge, not quoted as reference.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "eval_name": "silent-failure-when-mcp-unavailable",
+      "prompt": "Show me the files in the current directory",
+      "expected_output": "Boot memory is attempted first. If MCP fails, no error is shown to user — session proceeds silently.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "eval_name": "no-verbal-acknowledgment-without-writing",
+      "prompt": "I think we talked about this before — didn't we decide to use dark mode?",
+      "expected_output": "Skill triggers self-check: 'Is this in my MCP?' — finds the dark mode memory if it exists. User is not met with a vague 'yes we discussed that'. If not in MCP, writes it now.",
+      "files": []
+    }
+  ]
+}

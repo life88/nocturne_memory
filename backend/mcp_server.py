@@ -47,7 +47,7 @@ root_dir = os.path.dirname(current_dir)
 dotenv_path = os.path.join(root_dir, ".env")
 
 if os.path.exists(dotenv_path):
-    load_dotenv(dotenv_path)
+    load_dotenv(dotenv_path, override=False)
 else:
     # Fallback to find_dotenv
     _dotenv_path = find_dotenv(usecwd=True)
@@ -212,8 +212,6 @@ async def _ensure_frontend_built():
 @contextlib.asynccontextmanager
 async def lifespan(server: FastMCP):
     """Manage database connection lifecycle within the MCP event loop."""
-    web_server = None
-    web_task = None
     try:
         db_manager = get_db_manager()
         if os.environ.get("SKIP_DB_INIT", "").lower() not in ("true", "1", "yes"):
@@ -223,53 +221,41 @@ async def lifespan(server: FastMCP):
         asyncio.create_task(_ensure_frontend_built())
 
         # In stdio mode, spin up an embedded HTTP server for the admin UI.
-        # run_sse.py sets _NOCTURNE_SSE_MODE to prevent a duplicate.
+        # run_sse.py sets _NOCTURNE_SSE_MODE to any non-empty value to prevent a duplicate.
         if not os.environ.get("_NOCTURNE_SSE_MODE"):
-            import uvicorn
+            import threading
 
             port = int(os.environ.get("WEB_PORT", "8233"))
-            config = uvicorn.Config(
-                build_web_app(), host="0.0.0.0", port=port, log_level="warning",
-            )
-            web_server = uvicorn.Server(config)
-            
-            async def _serve_ui():
-                try:
-                    await web_server.serve()
-                except Exception as e:
-                    # Ignore the raw error message (usually OSError for address in use)
-                    # and print a user-friendly explanation.
-                    print(f"\n[Nocturne] Notice: Admin UI skipped (Port {port} in use).", file=sys.stderr)
-                    print(f"[Nocturne] This is expected if another MCP instance is already providing the UI.", file=sys.stderr)
-                    print(f"[Nocturne] The MCP server itself will continue to operate normally.", file=sys.stderr)
-                except SystemExit:
-                    print(f"\n[Nocturne] Notice: Admin UI skipped (Port {port} in use).", file=sys.stderr)
-                    print(f"[Nocturne] This is expected if another MCP instance is already providing the UI.", file=sys.stderr)
-                    print(f"[Nocturne] The MCP server itself will continue to operate normally.", file=sys.stderr)
-
-            web_task = asyncio.create_task(_serve_ui())
+            app = build_web_app()
             ui = f"http://localhost:{port}/"
             api_docs = f"http://localhost:{port}/api/docs"
-            
+
+            def _run_server():
+                import uvicorn
+                try:
+                    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+                except Exception:
+                    pass  # Port in use or server stopped — normal
+
+            server_thread = threading.Thread(target=_run_server, daemon=True)
+            server_thread.start()
+
             print(f"Admin UI:  {ui}", file=sys.stderr)
             print(f"REST API:  {api_docs}", file=sys.stderr)
 
             auto_open = os.environ.get("AUTO_OPEN_BROWSER", "true").lower() not in ("false", "0", "no")
             if auto_open:
                 async def _open_browser():
-                    while not getattr(web_server, "started", False):
-                        if web_task.done():
-                            return
-                        await asyncio.sleep(0.1)
-                    webbrowser.open(ui)
+                    # Give the server a moment to start
+                    await asyncio.sleep(1.5)
+                    try:
+                        webbrowser.open(ui)
+                    except Exception:
+                        pass
                 asyncio.create_task(_open_browser())
 
         yield
     finally:
-        if web_server:
-            web_server.should_exit = True
-        if web_task:
-            await web_task
         await close_db()
 
 
