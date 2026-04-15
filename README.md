@@ -362,8 +362,9 @@ AUTO_OPEN_BROWSER=true
 ```
 
 > [!TIP]
-> `~` 会在启动时自动展开成你的 home 目录，所以默认 SQLite 配置不再需要手动填写绝对路径。
-> 只有你想改存储位置、切到 PostgreSQL 或调整端口时，才需要编辑 `.env`。
+> `~` 只有在通过 `python nocturne.py ...` 启动时，才会自动展开成你的 home 目录。
+> 如果你按本文推荐的 MCP 配置使用 `nocturne.py stdio`，默认 SQLite 配置可直接使用；如果你直接运行 `backend/mcp_server.py` 或 `backend/run_sse.py`，请把 `DATABASE_URL` 写成完整绝对路径。
+> 安装向导则会直接把绝对路径写入 `.env`。
 
 </details>
 
